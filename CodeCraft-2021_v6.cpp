@@ -76,7 +76,7 @@ multimap<string, unordered_map<string, vector<int>>> DayServerOnVm; // ¼ÇÂ¼Ò»Ììµ
 vector<string> res;
 
 #ifdef TEST
-const string filePath = "training-1.txt";
+const string filePath = "training-2.txt";
 #endif
 
 // ³É±¾
@@ -266,7 +266,7 @@ void DealDeleteVM(vector<string>& delVmInfo) {
 
 unordered_map<string, float> PerformanceAndCostRatio;  //ÓĞĞòÈİÆ÷
 
-void GetBestServer(int day, unordered_map<string, ServerInfo> serverinfos) {
+void GetBestServer(int day, unordered_map<string, ServerInfo> serverinfos, int requestdays) {
 
 
 	float Cpu;
@@ -287,7 +287,7 @@ void GetBestServer(int day, unordered_map<string, ServerInfo> serverinfos) {
 		PowerCost = s.second.PowerCost;
 
 
-		PerformanceAndCostRatio.insert(make_pair(serverType, (ServerCost + day * PowerCost) / (Cpu + Memory)));  //¸ù¾İkeyÖµ¿ÉÒÔ×Ô¶¯ÅÅĞò
+		PerformanceAndCostRatio.insert(make_pair(serverType, (ServerCost + (requestdays - day) * PowerCost) / (Cpu + Memory)));  //¸ù¾İkeyÖµ¿ÉÒÔ×Ô¶¯ÅÅĞò
 	}
 
 }
@@ -560,7 +560,7 @@ void Expansion(int day, vector<unordered_map<string, ServerInfo>> serverinfos, v
 				}
 			}
 			for (auto m : Matching_degree) {
-				float costanddiffer = m.first * 0.6 + PerformanceAndCostRatio[m.second] * 0.6;  // ´Ë²ÎÊı±ÈÀı¿ÉÒÔµ÷½Ú
+				float costanddiffer = m.first * 0.5 + PerformanceAndCostRatio[m.second] * 0.5;  // ´Ë²ÎÊı±ÈÀı¿ÉÒÔµ÷½Ú£¬¾­²âÊÔ£¬0.5Ğ§¹û×îºÃ
 				CostAndDiffer.insert(make_pair(costanddiffer, m.second));
 			}
 		    
@@ -744,6 +744,12 @@ int ReDealAddVM(multimap<string, unordered_map<string, vector<int>>> serverOnVm,
 // Ç¨ÒÆĞéÄâ»ú
 void Migrate() {
 	string s = "(migration, 0)\n";
+
+
+
+
+
+
 #ifdef TEST
 	cout << s;
 #endif
@@ -905,7 +911,7 @@ int main() {
 			//printf("The %d day begin matching!!!\n", day + 1);
 		}
 #endif
-		GetBestServer(day, ServerInfos);
+		GetBestServer(day, ServerInfos, RequestDays);
 		Match(day, ServerInfos, RequestInfos);
 		ServerPowerCost();
 	}
