@@ -8,6 +8,10 @@
 #include <cassert>
 #include<fstream>
 #include<set>
+#include <omp.h>   // openMP
+
+#include<thread>
+#include<mutex>
 using namespace std;
 
 #define TEST
@@ -77,7 +81,7 @@ vector<string> migrantList{ "(migration, 0)\n" };
 vector<string> res;
 
 #ifdef TEST
-const string filePath = "training-1.txt";
+const string filePath = "training-2.txt";
 #endif
 
 // 成本
@@ -261,7 +265,7 @@ void ReleaseServerResources(ServerInfo& server, vector<int>& vmInfo, int serverI
 }
 
 
-// 处理删除虚拟机操作
+// ---------------------------------------------------  处理删除虚拟机操作------------------------------------------------------------------//
 void DealDeleteVM(vector<string>& delVmInfo) {
 
 	string _vmId = delVmInfo[1];
@@ -290,6 +294,7 @@ void DealDeleteVM(vector<string>& delVmInfo) {
 
 unordered_map<string, float> PerformanceAndCostRatio;  //有序容器
 
+// --------------------------------------------------- 计算服务器性价比 --------------------------------------------------------------------//
 void GetBestServer(int day, unordered_map<string, ServerInfo> serverinfos, int requestdays) {
 
 
@@ -317,333 +322,365 @@ void GetBestServer(int day, unordered_map<string, ServerInfo> serverinfos, int r
 }
 
 vector<unordered_map<string, ServerInfo>> PatchServerinfos;
-vector<vector< vector<string>>>PatchRequestinfos;
+vector<vector<vector<vector<string>>>>PatchRequestinfos;
 
 
 
-int PatchSize = 11;
-// 将服务器根据内核比归类
-void GetServerInfosPatch(unordered_map<string, ServerInfo>& serverinfos, unordered_map<string, VmInfo> vminfos, vector<vector<string>> requestinfos) {
+int PatchSize = 5;
+int QuestRange = 5000;
+int buffer_num = 10;
+// ---------------------------------------------------将服务器和虚拟机根据内核比归类-----------------------------------------------------------------------------------//
+void GetServerInfosPatch(unordered_map<string, ServerInfo> serverinfos, unordered_map<string, VmInfo> vminfos, vector<vector<string>> requestinfos) {
 
-	float CPU_to_Memory;
-	int vmCpuAddMemory;
-	multimap<float, string> serverinfostmp;
-	unordered_map<string, ServerInfo> serverinfostmp2;
-	multimap<float, multimap<int, vector<string>>>     vminfostmp;  // 内核比->(vmCpu+内存资源， vm信息)
-	multimap<int, vector<string>> vmInfosSort;  // 只存一个
-	for (auto& s : serverinfos) {
-		CPU_to_Memory = (float)(s.second.CpuCores_A + s.second.CpuCores_B) / (float)(s.second.MemerySize_A + s.second.MemerySize_B);
+	vector<vector<vector<string>>> requestinfos_buff;  // 切分的add请求buffer
 
-		s.second.Cpu_Memory_ratio = CPU_to_Memory;
+	int buffer_length = requestinfos.size() / buffer_num;
 
-		serverinfostmp.insert(make_pair(CPU_to_Memory, s.first));
+	if (requestinfos.size() < QuestRange) {   // 如果数据小于QuestRange，就不用切分
+		requestinfos_buff.push_back(requestinfos);
 	}
+	else {	
+		requestinfos_buff.resize(buffer_num);
+		for (int i = 0; i < buffer_num; i++) {
 
-	for (auto re : requestinfos) {
-		if (re.size() > 2) {
-			CPU_to_Memory = (float)(vminfos[re[1]].CpuCores) / (float)(vminfos[re[1]].MemerySize);  // 计算该vm请求的内核比
-			vmCpuAddMemory = vminfos[re[1]].CpuCores + vminfos[re[1]].MemerySize;                   // 计算该vm所需资源数（cpu+内存）
+			if (i == buffer_num - 1) {
 
-			vmInfosSort.insert(make_pair(vmCpuAddMemory, re));
-			vminfostmp.insert(make_pair(CPU_to_Memory, vmInfosSort));                                       // 按照内核比升序排列
-			vmInfosSort.clear();
-		}
-	}
+				vector<vector<string>>::iterator first = requestinfos.begin();
+				vector<vector<string>>::iterator second = requestinfos.begin() + requestinfos.size();
 
-	if (vminfostmp.size() > 500000) {   // 当虚拟机add请求数量很大时，分的更细
-
-		PatchServerinfos.resize(PatchSize);
-
-		for (auto s : serverinfostmp) {
-			if (s.first <= 0.2) {   // 此参数可以修改（C语言老师看了想杀我系列）
-				PatchServerinfos[0][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 0.3) {
-				PatchServerinfos[1][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 0.4) {
-				PatchServerinfos[2][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 0.6) {
-				PatchServerinfos[3][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 0.8) {
-				PatchServerinfos[4][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 1.0) {
-				PatchServerinfos[5][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 2.0) {
-				PatchServerinfos[6][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 3.0) {
-				PatchServerinfos[7][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 5.0) {
-				PatchServerinfos[8][s.second] = serverinfos[s.second];
-			}
-			else if (s.first <= 7.0) {
-				PatchServerinfos[9][s.second] = serverinfos[s.second];
+				requestinfos_buff[i].assign(first, second);
+				requestinfos.erase(requestinfos.begin(), requestinfos.begin() + requestinfos.size());
 			}
 			else {
-				PatchServerinfos[10][s.second] = serverinfos[s.second];
+				vector<vector<string>>::iterator first = requestinfos.begin();
+				vector<vector<string>>::iterator second = requestinfos.begin() + buffer_length;
+
+				requestinfos_buff[i].assign(first, second);
+				requestinfos.erase(requestinfos.begin(), requestinfos.begin() + buffer_length);
 			}
 		}
 
-		PatchRequestinfos.resize(PatchSize);
-		/*for (auto vms : vminfostmp) {
-			if (vms.first <= 0.1) {
-				PatchRequestinfos[0].push_back(vms.second);
-			}
-			else if (vms.first <= 0.2) {
-				PatchRequestinfos[1].push_back(vms.second);
-			}
-			else if (vms.first <= 0.3) {
-				PatchRequestinfos[2].push_back(vms.second);
-			}
-			else if (vms.first <= 0.5) {
-				PatchRequestinfos[3].push_back(vms.second);
-			}
-			else if (vms.first <= 0.7) {
-				PatchRequestinfos[4].push_back(vms.second);
-			}
-			else if (vms.first <= 1.0) {
-				PatchRequestinfos[5].push_back(vms.second);
-			}
-			else if (vms.first <= 2.0) {
-				PatchRequestinfos[6].push_back(vms.second);
-			}
-			else if (vms.first <= 4.0) {
-				PatchRequestinfos[7].push_back(vms.second);
-			}
-			else if (vms.first <= 6.0) {
-				PatchRequestinfos[8].push_back(vms.second);
-			}
-			else if (vms.first <= 10.0) {
-				PatchRequestinfos[9].push_back(vms.second);
-			}
-			else {
-				PatchRequestinfos[10].push_back(vms.second);
-			}
-		}*/
 	}
-	else {  // 只分成2类，内核比>1和<1
-		PatchServerinfos.resize(2);
-		for (auto s : serverinfostmp) {
-			if (s.first <= 1.0) {
-				PatchServerinfos[0][s.second] = serverinfos[s.second];
-			}
-			else {
-				PatchServerinfos[1][s.second] = serverinfos[s.second];
+	PatchRequestinfos.resize(buffer_num);
+	for (int i = 0; i < requestinfos_buff.size(); i++) {
+		float CPU_to_Memory;
+		int vmCpuAddMemory;
+		multimap<float, string> serverinfostmp;
+		unordered_map<string, ServerInfo> serverinfostmp2;
+		multimap<float, multimap<int, vector<string>>>     vminfostmp;  // 内核比->(vmCpu+内存资源， vm信息)
+		multimap<int, vector<string>> vmInfosSort;  // 只存一个
+		for (auto s : serverinfos) {
+			CPU_to_Memory = (float)(s.second.CpuCores_A + s.second.CpuCores_B) / (float)(s.second.MemerySize_A + s.second.MemerySize_B);
+
+			//s.second.Cpu_Memory_ratio = CPU_to_Memory;
+
+			serverinfostmp.insert(make_pair(CPU_to_Memory, s.first));
+		}
+
+		for (auto re : requestinfos_buff[i]) {
+			if (re.size() > 2) {
+				CPU_to_Memory = (float)(vminfos[re[1]].CpuCores) / (float)(vminfos[re[1]].MemerySize);  // 计算该vm请求的内核比
+				vmCpuAddMemory = vminfos[re[1]].CpuCores + vminfos[re[1]].MemerySize;                   // 计算该vm所需资源数（cpu+内存）
+
+				vmInfosSort.insert(make_pair(vmCpuAddMemory, re));
+				vminfostmp.insert(make_pair(CPU_to_Memory, vmInfosSort));                                       // 按照内核比升序排列
+				vmInfosSort.clear();
 			}
 		}
 
-		PatchRequestinfos.resize(2);
-		multimap<int, vector<string>, greater<int>> vmInfosSort_1;
-		multimap<int, vector<string>, greater<int>> vmInfosSort_2;
-		for (auto vms = vminfostmp.begin(); vms != vminfostmp.end(); vms++) {
-			if ((*vms).first <= 30) {
+		if (vminfostmp.size() > 5000000) {   // 当虚拟机add请求数量很大时，分的更细,有bug！！
+
+			PatchServerinfos.resize(PatchSize);
+
+			for (auto s : serverinfostmp) {
+				if (s.first <= 0.2) {   // 此参数可以修改（C语言老师看了想杀我系列）
+					PatchServerinfos[0][s.second] = serverinfos[s.second];
+				}
+				else if (s.first <= 0.5) {
+					PatchServerinfos[1][s.second] = serverinfos[s.second];
+				}
+				else if (s.first <= 1.0) {
+					PatchServerinfos[2][s.second] = serverinfos[s.second];
+				}
+				else if (s.first <= 5) {
+					PatchServerinfos[3][s.second] = serverinfos[s.second];
+				}
+				else {
+					PatchServerinfos[4][s.second] = serverinfos[s.second];
+				}
+			}
+
+			PatchRequestinfos[i].resize(PatchSize);
+			multimap<int, vector<string>, greater<int>> vmInfosSort_1;
+			multimap<int, vector<string>, greater<int>> vmInfosSort_2;
+			multimap<int, vector<string>, greater<int>> vmInfosSort_3;
+			multimap<int, vector<string>, greater<int>> vmInfosSort_4;
+			multimap<int, vector<string>, greater<int>> vmInfosSort_5;
+
+			for (auto vms = vminfostmp.begin(); vms != vminfostmp.end(); vms++) {
+				if ((*vms).first <= 0.3) {
+					auto it = (*vms).second.begin();
+					vmInfosSort_1.insert(make_pair((*it).first, (*it).second));
+				}
+				else if ((*vms).first <= 0.7) {
+					auto it = (*vms).second.begin();
+					vmInfosSort_2.insert(make_pair((*it).first, (*it).second));
+				}
+				else if ((*vms).first <= 1) {
+					auto it = (*vms).second.begin();
+					vmInfosSort_3.insert(make_pair((*it).first, (*it).second));
+				}
+				else if ((*vms).first <= 5) {
+					auto it = (*vms).second.begin();
+					vmInfosSort_4.insert(make_pair((*it).first, (*it).second));
+				}
+				else {
+					auto it = (*vms).second.begin();
+					vmInfosSort_5.insert(make_pair((*it).first, (*it).second));
+				}
+
+			}
+			for (auto vm : vmInfosSort_1) {
+				PatchRequestinfos[i][0].push_back(vm.second);
+			}
+			for (auto vm : vmInfosSort_2) {
+				PatchRequestinfos[i][1].push_back(vm.second);
+			}
+			for (auto vm : vmInfosSort_3) {
+				PatchRequestinfos[i][2].push_back(vm.second);
+			}
+			for (auto vm : vmInfosSort_4) {
+				PatchRequestinfos[i][3].push_back(vm.second);
+			}
+			for (auto vm : vmInfosSort_5) {
+				PatchRequestinfos[i][4].push_back(vm.second);
+			}
+
+			vmInfosSort_1.clear();
+			vmInfosSort_2.clear();
+			vmInfosSort_3.clear();
+			vmInfosSort_4.clear();
+			vmInfosSort_5.clear();
+		}
+		else if (vminfostmp.size() < 100000) {  // 只分成2类，内核比>1和<1
+			PatchServerinfos.resize(2);
+			for (auto s : serverinfostmp) {
+				if (s.first <= 1.0) {
+					PatchServerinfos[0][s.second] = serverinfos[s.second];
+				}
+				else {
+					PatchServerinfos[1][s.second] = serverinfos[s.second];
+				}
+			}
+
+			PatchRequestinfos[i].resize(2);
+			multimap<int, vector<string>, greater<int>> vmInfosSort_1;
+			multimap<int, vector<string>, greater<int>> vmInfosSort_2;
+			for (auto vms = vminfostmp.begin(); vms != vminfostmp.end(); vms++) {
+				if ((*vms).first <= 1.0) {                                               // 此参数可以修改 30最好
+					auto it = (*vms).second.begin();
+					vmInfosSort_1.insert(make_pair((*it).first, (*it).second));
+				}
+				else {
+					auto it = (*vms).second.begin();
+					vmInfosSort_2.insert(make_pair((*it).first, (*it).second));
+				}
+			}
+
+			for (auto vm : vmInfosSort_1) {
+				PatchRequestinfos[i][0].push_back(vm.second);
+			}
+			for (auto vm : vmInfosSort_2) {
+				PatchRequestinfos[i][1].push_back(vm.second);
+			}
+			vmInfosSort_1.clear();
+			vmInfosSort_2.clear();
+
+		}
+		if (false) {  // 不按照内核比进行分类(测试效果不行）
+			PatchServerinfos.resize(1);
+			PatchServerinfos[0] = serverinfos;
+
+			PatchRequestinfos[i].resize(1);
+			multimap<int, vector<string>, greater<int>> vmInfosSort_1;
+			for (auto vms = vminfostmp.begin(); vms != vminfostmp.end(); vms++) {
 				auto it = (*vms).second.begin();
 				vmInfosSort_1.insert(make_pair((*it).first, (*it).second));
 			}
-			else {
-				auto it = (*vms).second.begin();
-				vmInfosSort_2.insert(make_pair((*it).first, (*it).second));
-			}
-		}
 
-		for (auto vm : vmInfosSort_1) {
-			PatchRequestinfos[0].push_back(vm.second);
+			for (auto vm : vmInfosSort_1) {
+				PatchRequestinfos[i][0].push_back(vm.second);
+			}
+			vmInfosSort_1.clear();
 		}
-		for (auto vm : vmInfosSort_2) {
-			PatchRequestinfos[1].push_back(vm.second);
-		}
-		vmInfosSort_1.clear();
-		vmInfosSort_2.clear();
+		serverinfostmp.clear();
+		vminfostmp.clear();
 
 	}
-	serverinfostmp.clear();
-	vminfostmp.clear();
+
+	
 }
 
 int serverId = 0;  // 服务器ID(全局)
 multimap<string, unordered_map<string, vector<int>>> ServerOnVm_type;  // 通过服务器类型来记录在该类型服务器上的vm，
 vector<string>  ServerType;  // 按顺序存放每天选出的最优服务器类型名称，方便输出时按照此顺序找到对应服务器ID
 
-// 扩容服务器 + 分配
-void Expansion(int day, vector<unordered_map<string, ServerInfo>> serverinfos, vector<vector<vector<string>>> requestinfos_patch) {
-
+// ------------------------------------------------------------------ 扩容--------------------------------------------------------------------------- //
+void Expansion(int day, vector<unordered_map<string, ServerInfo>> serverinfos, vector<vector<vector<vector<string>>>> requestinfos_patch) {
 
 	unordered_map<string, unordered_map<string, vector<int>>> vmsOnserverBestmatch; // 记录购买的服务器和凑出的虚拟机匹配信息 <服务器型号，<虚拟机Id，vm内存，vmCpu,vmTwoNodes>>
-
-	//unordered_map<string, int> ServerBuyNum;
 
 	set<string> ServerTypeNum;
 
 	multimap<string, ServerInfo> sysServerResourceTemp;
-	//vector<vector<string>> requestinfos_patch;
+
+    //#pragma omp parallel for num_threads(4)
+	for (int buff = 0; buff < buffer_num; buff++) {
+		for (int patch = 0; patch < requestinfos_patch[buff].size(); patch++) {
+
+			while (requestinfos_patch[buff][patch].size() > 0) {    // 如果请求信息还有一直循环
+
+				unordered_map<string, unordered_map<string, vector<int>>> vmsOnserverTemp; // 记录服务器和凑出的虚拟机匹配信息 <服务器型号，<虚拟机Id，vm内存，vmCpu,vmTwoNodes>>
+				multimap<int, string> Matching_degree;  // 记录凑出的服务器的匹配程度差值，取最小
+				unordered_map<string, ServerInfo> ServerResourceTemp;
+				multimap<float, string> CostAndDiffer; // 将性价比考虑进去，记录差值与性价比权衡后的值
+
+				for (auto s : serverinfos[patch]) {    // 和所有服务器进行匹配
+
+					int taget_tatal = s.second.CpuCores_A + s.second.CpuCores_B + s.second.MemerySize_A + s.second.MemerySize_B;  //初始化服务器和凑到的虚拟机资源差值
+					int taget_CpuCores_A = s.second.CpuCores_A, taget_CpuCores_B = s.second.CpuCores_B, taget_MemerySize_A = s.second.MemerySize_A, taget_MemerySize_B = s.second.MemerySize_B;
+					bool flag = false;
+
+					for (int i = 0; i < requestinfos_patch[buff][patch].size(); i++) {
+
+						int vmCores = VmInfos[requestinfos_patch[buff][patch][i][1]].CpuCores;
+						int vmMemory = VmInfos[requestinfos_patch[buff][patch][i][1]].MemerySize;
+						int vmTwoNodes = VmInfos[requestinfos_patch[buff][patch][i][1]].VmTwoNodes;
+						vector<int> vminfoAdd;
+
+						if (vmTwoNodes) {    // 双节点vm
+							int needCores = vmCores / 2;
+							int needMemory = vmMemory / 2;
+							if (taget_CpuCores_A >= needCores && taget_CpuCores_B >= needCores && taget_MemerySize_A >= needMemory && taget_MemerySize_B >= needMemory) {
+								taget_CpuCores_A -= needCores;
+								taget_CpuCores_B -= needCores;
+								taget_MemerySize_A -= needMemory;
+								taget_MemerySize_B -= needMemory;
+
+								taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
+
+								vminfoAdd.push_back(vmCores);
+								vminfoAdd.push_back(vmMemory);
+								vminfoAdd.push_back(1);
+								vminfoAdd.push_back(2);
+								vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[buff][patch][i][2], vminfoAdd));
+								vminfoAdd.clear();
 
 
-	for (int patch = 0; patch < requestinfos_patch.size(); patch++) {
-
-		while (requestinfos_patch[patch].size() > 0) {    // 如果请求信息还有一直循环
-
-			unordered_map<string, unordered_map<string, vector<int>>> vmsOnserverTemp; // 记录服务器和凑出的虚拟机匹配信息 <服务器型号，<虚拟机Id，vm内存，vmCpu,vmTwoNodes>>
-			multimap<int, string> Matching_degree;  // 记录凑出的服务器的匹配程度差值，取最小
-			unordered_map<string, ServerInfo> ServerResourceTemp;
-			multimap<float, string> CostAndDiffer; // 将性价比考虑进去，记录差值与性价比权衡后的值
-
-			for (auto s : serverinfos[patch]) {    // 和所有服务器进行匹配
-
-				int taget_tatal = s.second.CpuCores_A + s.second.CpuCores_B + s.second.MemerySize_A + s.second.MemerySize_B;  //初始化服务器和凑到的虚拟机资源差值
-				int taget_CpuCores_A = s.second.CpuCores_A, taget_CpuCores_B = s.second.CpuCores_B, taget_MemerySize_A = s.second.MemerySize_A, taget_MemerySize_B = s.second.MemerySize_B;
-				bool flag = false;
-
-				for (int i = 0; i < requestinfos_patch[patch].size();i++) {
-					
-					int vmCores = VmInfos[requestinfos_patch[patch][i][1]].CpuCores;
-					int vmMemory = VmInfos[requestinfos_patch[patch][i][1]].MemerySize;
-					int vmTwoNodes = VmInfos[requestinfos_patch[patch][i][1]].VmTwoNodes;
-					vector<int> vminfoAdd;
-
-					if (vmTwoNodes) {    // 双节点vm
-						int needCores = vmCores / 2;
-						int needMemory = vmMemory / 2;
-						if (taget_CpuCores_A >= needCores && taget_CpuCores_B >= needCores && taget_MemerySize_A >= needMemory && taget_MemerySize_B >= needMemory) {
-							taget_CpuCores_A -= needCores;
-							taget_CpuCores_B -= needCores;
-							taget_MemerySize_A -= needMemory;
-							taget_MemerySize_B -= needMemory;
-
-							taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
-
-							vminfoAdd.push_back(vmCores);
-							vminfoAdd.push_back(vmMemory);
-							vminfoAdd.push_back(1);
-							vminfoAdd.push_back(2);
-							vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[patch][i][2], vminfoAdd));
-							vminfoAdd.clear();
-							
-
-							if (i == requestinfos_patch[patch].size() - 1)
-								Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
+								if (i == requestinfos_patch[buff][patch].size() - 1)
+									Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
+							}
 						}
-					}
-					else {  // 单节点
-						if (taget_CpuCores_A >= vmCores && taget_MemerySize_A >= vmMemory) {
+						else {  // 单节点
+							if (taget_CpuCores_A >= vmCores && taget_MemerySize_A >= vmMemory) {
 
-							flag = true;
+								flag = true;
 
-							taget_CpuCores_A -= vmCores;
-							taget_MemerySize_A -= vmMemory;
+								taget_CpuCores_A -= vmCores;
+								taget_MemerySize_A -= vmMemory;
 
-							taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
+								taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
 
-							vminfoAdd.push_back(vmCores);
-							vminfoAdd.push_back(vmMemory);
-							vminfoAdd.push_back(1);
+								vminfoAdd.push_back(vmCores);
+								vminfoAdd.push_back(vmMemory);
+								vminfoAdd.push_back(1);
 
-							vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[patch][i][2], vminfoAdd));
-							vminfoAdd.clear();
+								vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[buff][patch][i][2], vminfoAdd));
+								vminfoAdd.clear();
+							}
+							else if (taget_CpuCores_B >= vmCores && taget_MemerySize_B >= vmMemory) {
 
+								taget_CpuCores_B -= vmCores;
+								taget_MemerySize_B -= vmMemory;
 
-							//if (i == requestinfos_patch[patch].size() - 1)
-							//	Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
+								taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
+
+								vminfoAdd.push_back(vmCores);
+								vminfoAdd.push_back(vmMemory);
+								vminfoAdd.push_back(2);
+
+								vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[buff][patch][i][2], vminfoAdd));
+								vminfoAdd.clear();
+
+							}
+
 						}
-						else if (taget_CpuCores_B >= vmCores && taget_MemerySize_B >= vmMemory) {
+					} // 一台服务器凑数结束
+					Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
 
-							taget_CpuCores_B -= vmCores;
-							taget_MemerySize_B -= vmMemory;
+					// 记录这台服务器上的资源剩余分配情况
+					ServerResourceTemp[s.first].CpuCores_A = taget_CpuCores_A;
+					ServerResourceTemp[s.first].CpuCores_B = taget_CpuCores_B;
+					ServerResourceTemp[s.first].MemerySize_A = taget_MemerySize_A;
+					ServerResourceTemp[s.first].MemerySize_B = taget_MemerySize_B;
+					ServerResourceTemp[s.first].PowerCost = ServerInfos[s.first].PowerCost;
 
-							taget_tatal = taget_CpuCores_A + taget_CpuCores_B + taget_MemerySize_A + taget_MemerySize_B; // 计算差值
+				}  // 所有服务器一次循环结束
 
-							vminfoAdd.push_back(vmCores);
-							vminfoAdd.push_back(vmMemory);
-							vminfoAdd.push_back(2);
+				//选出最匹配的所有服务器
 
-							vmsOnserverTemp[s.first].insert(make_pair(requestinfos_patch[patch][i][2], vminfoAdd));
-							vminfoAdd.clear();
+				// 由于差值最小的服务器可能却不能满足分配要求，所以依次取下一个
+				for (multimap<int, string>::iterator it = Matching_degree.begin(); it != Matching_degree.end(); ) {
+					if (vmsOnserverTemp[(*it).second].size() == 0) {
+						it = Matching_degree.erase(it);
+					}
+					else {
+						it++;
+					}
+				}
+				for (auto m : Matching_degree) {
+					float costanddiffer = m.first * 0.5 + PerformanceAndCostRatio[m.second] * 0.5;  // 此参数比例可以调节，经测试，数据集2不考虑性价比效果最好，数据集1考虑0.5最好
+					CostAndDiffer.insert(make_pair(costanddiffer, m.second));
+				}
+
+				auto first = CostAndDiffer.begin();
 
 
-							//if (i == requestinfos_patch[patch].size() - 1)
-							//	Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
+				ServerTypeNum.insert((*first).second); // 记录一次买多少种服务器，用于输出
+
+				ServerOnVm_type.insert(make_pair((*first).second, vmsOnserverTemp[(*first).second]));   //相同的服务器类型会排列在一起，组合成购买的输出，按顺序排serverID
+
+				// 将购买的服务器及其剩余的资源数存入系统现在占有资源情况(此处用multimap按照服务器名称存入，是为了与ServerOnVm_type中的存的服务器顺序保持一致，后面再将其转换成id保存)
+				sysServerResourceTemp.insert(make_pair((*first).second, ServerResourceTemp[(*first).second]));
+
+				SERVERCOST += ServerInfos[(*first).second].ServerCost;  // 购买服务器费用累加计算
+
+				// 从requestinfos去除分配好的虚拟机,这里需要修改，如何删除不连续的add请求
+				auto s = vmsOnserverTemp[(*first).second]; // 记录凑好的虚拟机
+
+				for (auto ss : s) {
+					int pos = 0;
+					vector<string>::iterator deleVminfotmp;
+					vector<vector<string>>::iterator deleVminfo;
+					for (int pos = 0; pos < requestinfos_patch[buff][patch].size(); pos++) {
+						deleVminfotmp = find(requestinfos_patch[buff][patch][pos].begin(), requestinfos_patch[buff][patch][pos].end(), ss.first);
+						if (deleVminfotmp != requestinfos_patch[buff][patch][pos].end()) {
+							deleVminfo = requestinfos_patch[buff][patch].begin() + pos;
+							break;
 						}
-					
+
 					}
-
-					
-
-				} // 一台服务器凑数结束
-				Matching_degree.insert(make_pair(taget_tatal, s.first));   // 记录服务器与虚拟机匹配的差值
-
-
-				// 记录这台服务器上的资源剩余分配情况
-				ServerResourceTemp[s.first].CpuCores_A = taget_CpuCores_A;
-				ServerResourceTemp[s.first].CpuCores_B = taget_CpuCores_B;
-				ServerResourceTemp[s.first].MemerySize_A = taget_MemerySize_A;
-				ServerResourceTemp[s.first].MemerySize_B = taget_MemerySize_B;
-				ServerResourceTemp[s.first].PowerCost = ServerInfos[s.first].PowerCost;
-
-
-			}  // 所有服务器一次循环结束
-
-
-			//选出最匹配的所有服务器
-
-			// 由于差值最小的服务器可能却不能满足分配要求，所以依次取下一个
-			//multimap<int, string>::iterator first = Matching_degree.begin();
-			for (multimap<int, string>::iterator it = Matching_degree.begin(); it != Matching_degree.end(); ) {
-				if (vmsOnserverTemp[(*it).second].size() == 0) {
-					it = Matching_degree.erase(it);
+					requestinfos_patch[buff][patch].erase(deleVminfo);
 				}
-				else {
-					it++;
-				}
-			}
-			for (auto m : Matching_degree) {
-				float costanddiffer = m.first * 0.5 + PerformanceAndCostRatio[m.second] * 0.5;  // 此参数比例可以调节，经测试，0.5效果最好
-				CostAndDiffer.insert(make_pair(costanddiffer, m.second));
-			}
+				Matching_degree.clear();
+			}  // 一天所有请求分配结束
+		}
 
-			auto first = CostAndDiffer.begin();
-			//ServerType.push_back((*first).second);
-
-			ServerTypeNum.insert((*first).second); // 记录一次买多少种服务器，用于输出
-
-			ServerOnVm_type.insert(make_pair((*first).second, vmsOnserverTemp[(*first).second]));   //相同的服务器类型会排列在一起，组合成购买的输出，按顺序排serverID
-
-			// 将购买的服务器及其剩余的资源数存入系统现在占有资源情况(此处用multimap按照服务器名称存入，是为了与ServerOnVm_type中的存的服务器顺序保持一致，后面再将其转换成id保存)
-			sysServerResourceTemp.insert(make_pair((*first).second, ServerResourceTemp[(*first).second]));
-
-
-			SERVERCOST += ServerInfos[(*first).second].ServerCost;  // 购买服务器费用累加计算
-
-			// 从requestinfos去除分配好的虚拟机,这里需要修改，如何删除不连续的add请求
-			auto s = vmsOnserverTemp[(*first).second]; // 记录凑好的虚拟机
-
-			for (auto ss : s) {
-				int pos = 0;
-				vector<string>::iterator deleVminfotmp;
-				vector<vector<string>>::iterator deleVminfo;
-				for (int pos = 0; pos < requestinfos_patch[patch].size(); pos++) {
-					deleVminfotmp = find(requestinfos_patch[patch][pos].begin(), requestinfos_patch[patch][pos].end(), ss.first);
-					if (deleVminfotmp != requestinfos_patch[patch][pos].end()) {
-						deleVminfo = requestinfos_patch[patch].begin() + pos;
-						break;
-					}
-						
-				}
-				requestinfos_patch[patch].erase(deleVminfo);
-			}
-		
-			Matching_degree.clear();
-		}  // 一天所有请求分配结束
+		requestinfos_patch[buff].clear(); // 清除一天的请求信息
+		PatchRequestinfos[buff].clear();
+		PatchServerinfos.clear();
 	}
-
-	requestinfos_patch.clear(); // 清除一天的请求信息
-
-	PatchRequestinfos.clear();
-	PatchServerinfos.clear();
+	
 
 	// 输出购买类型数量信息
 	string s = "(purchase, ";
@@ -723,7 +760,7 @@ void Expansion(int day, vector<unordered_map<string, ServerInfo>> serverinfos, v
 	}
 }
 
-// 此函数用来
+// ----------------------------------------------------------------预处理add请求------------------------------------------- //
 int DealAddVm(vector<string> createVmInfo, vector<string>& res_tmp);
 int DealAddVm(vector<string> createVmInfo, vector<string>& res_tmp) {
 	string _reqVmType = createVmInfo[1], _reqId = createVmInfo[2];
@@ -775,7 +812,7 @@ int DealAddVm(vector<string> createVmInfo, vector<string>& res_tmp) {
 }
 
 
-// 处理每一个add请求
+// ----------------------------------处理每一个add请求----------------------------------------------------------------------//
 int ServerIdAdd = 0; // 每天增加的服务器数量
 int ReDealAddVM(multimap<string, unordered_map<string, vector<int>>> serverOnVm, vector<string> request, vector<string>& res_tmp, int day);
 int ReDealAddVM(multimap<string, unordered_map<string, vector<int>>> serverOnVm, vector<string> request, vector<string>& res_tmp, int day) {
@@ -807,16 +844,7 @@ int ReDealAddVM(multimap<string, unordered_map<string, vector<int>>> serverOnVm,
 	return -1;
 }
 
-
-void _Migrate() {
-	string s = "(migration, 0)\n";
-#ifdef TEST
-	cout << s;
-#endif
-	res.push_back(s);
-}
-
-// 迁移虚拟机
+// ---------------------------------------------------------------迁移虚拟机 --------------------------------------------------------------------//
 void Migrate() {
 
 	multimap<int, int> serverRunVmsTmp; // vm数量，服务器ID
@@ -830,9 +858,9 @@ void Migrate() {
 	map<int, int>::iterator head = serverRunVmsTmp.begin();
 	auto  tail = serverRunVmsTmp.end();
 	tail--; // 目的是将tail指针指向serverRunVmsTmp最后一个元素的位置
-	//while (moveNum <= (vmSum / 5000)) {  // 这里如何减少不必要的循环，无效的迁移？？？？
+
 	while (head != tail) {
-		if (moveNum > (vmSum / 2000) || (vmSum / 2000) == 0)
+		if (moveNum > (vmSum / 1000) || (vmSum / 1000) == 0)
 			break;
 		while (head != tail && (*head).first != 0) {
 
@@ -871,7 +899,6 @@ void Migrate() {
 						SourceMemoryA += needMemory;
 						SourceMemoryB += needMemory;
 
-
 						// 更新虚拟机运行在哪个服务器上（双节点部署）
 						VmOnServer[(*sov).first] = vector<int>{ (*tail).second,vmCores,vmMemory,1,2 };
 
@@ -908,10 +935,9 @@ void Migrate() {
 
 
 					// 更新虚拟机运行在哪个服务器上
-
 					VmOnServer[(*sov).first] = vector<int>{ (*tail).second,vmCores,vmMemory,1 };
 
-					res_tmp.push_back("(" + (*sov).first + ", " + to_string((*tail).second) + ", 0)\n");			//输出
+					res_tmp.push_back("(" + (*sov).first + ", " + to_string((*tail).second) + ", A)\n");			//输出
 
 					moveNum++;
 
@@ -920,7 +946,6 @@ void Migrate() {
 					sov = ServerOnVm[(*head).second].erase(sov);       // 将此虚拟机从原有位置删除
 					serverRunVms[(*tail).second]++;                   //  目的服务器ID上的虚拟机数量加1
 					serverRunVms[(*head).second]--;                   //  原服务器ID上的虚拟机数量减1
-
 
 					assert(serverRunVms[(*head).second] >= 0);
 
@@ -943,7 +968,7 @@ void Migrate() {
 					// 更新虚拟机运行在哪个服务器上（双节点部署）	
 					VmOnServer[(*sov).first] = vector<int>{ (*tail).second,vmCores,vmMemory,2 };
 
-					res_tmp.push_back("(" + (*sov).first + ", " + to_string((*tail).second) + ", 1)\n");			//输出
+					res_tmp.push_back("(" + (*sov).first + ", " + to_string((*tail).second) + ", B)\n");			//输出
 
 					moveNum++;
 					(*sov).second[2] = 2;
@@ -961,23 +986,26 @@ void Migrate() {
 			}
 			tail--;
 		}
-		//sort(serverRunVmsTmp.begin(), serverRunVmsTmp.end());
-		//head = serverRunVmsTmp.begin();
 		tail = serverRunVmsTmp.end();
 		tail--;
 		head++;
-
 	}
-
 	string s = "(migration, " + to_string(moveNum) + ")\n";
 	migrantList.push_back(s);
 	for (auto s : res_tmp) {
 		migrantList.push_back(s);
 	}
-
 }
 
-// 分配
+void _Migrate() {
+	string s = "(migration, 0)\n";
+#ifdef TEST
+	cout << s;
+#endif
+	res.push_back(s);
+}
+
+// ---------------------------------------------------------------调度匹配 --------------------------------------------------------------------- //
 void Match(int day, unordered_map<string, ServerInfo> serverinfos, vector<vector<string>> requestinfos) {
 
 	vector<string> res_tmp;
@@ -1017,8 +1045,10 @@ void Match(int day, unordered_map<string, ServerInfo> serverinfos, vector<vector
 #ifdef TEST 
 		printf("There are %d requests waiting to matching !!\n", requestinfos.size());
 #endif
-
-		Migrate();
+		//if (day % 5 == 0) {
+			Migrate();
+		//}
+		
 		for (vector<vector<string>>::iterator req = requestinfos.begin(); req != requestinfos.end(); ) {
 			int opType = (*req).size() == 3 ? 1 : 0;
 			if (opType) {  // add
@@ -1040,6 +1070,9 @@ void Match(int day, unordered_map<string, ServerInfo> serverinfos, vector<vector
 		}
 		GetServerInfosPatch(serverinfos, VmInfos, requestinfos);
 		Expansion(day, PatchServerinfos, PatchRequestinfos);
+		//if (day % 5 != 0) {
+		//	_Migrate();
+		//}
 		//_Migrate();
 		for (vector<vector<string>>::iterator req = requestinfos.begin(); req != requestinfos.end(); req++) {
 			int opType = (*req).size() == 3 ? 1 : 0;
@@ -1064,7 +1097,7 @@ void Match(int day, unordered_map<string, ServerInfo> serverinfos, vector<vector
 		res_tmp.clear();
 		ServerIdAdd += ServerOnVm_type.size();
 		ServerOnVm_type.clear();
-		// Migrate(); // 其实是对前一天的进行迁移，输出顺序要改变
+
 	}
 }
 
